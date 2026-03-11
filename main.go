@@ -1,21 +1,58 @@
 package main
 
 import (
-	"fmt"
+	"cows/scheduler"
+	"cows/store/memory"
+	discordtransport "cows/transport/discord"
+	"cows/usecases"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/bwmarrin/discordgo"
 )
 
-//TIP <p>To run your code, right-click the code and select <b>Run</b>.</p> <p>Alternatively, click
-// the <icon src="AllIcons.Actions.Execute"/> icon in the gutter and select the <b>Run</b> menu item from here.</p>
-
 func main() {
-	//TIP <p>Press <shortcut actionId="ShowIntentionActions"/> when your caret is at the underlined text
-	// to see how GoLand suggests fixing the warning.</p><p>Alternatively, if available, click the lightbulb to view possible fixes.</p>
-	s := "gopher"
-	fmt.Printf("Hello and welcome, %s!\n", s)
-
-	for i := 1; i <= 5; i++ {
-		//TIP <p>To start your debugging session, right-click your code in the editor and select the Debug option.</p> <p>We have set one <icon src="AllIcons.Debugger.Db_set_breakpoint"/> breakpoint
-		// for you, but you can always add more by pressing <shortcut actionId="ToggleLineBreakpoint"/>.</p>
-		fmt.Println("i =", 100/i)
+	if err := loadDotEnv(".env"); err != nil {
+		log.Fatalf("load .env: %v", err)
 	}
+
+	token := os.Getenv("DISCORD_TOKEN")
+	appID := os.Getenv("DISCORD_APP_ID")
+	guildID := os.Getenv("DISCORD_GUILD_ID")
+	if token == "" || appID == "" {
+		log.Fatal("set DISCORD_TOKEN and DISCORD_APP_ID (can be placed in .env)")
+	}
+
+	store := memory.New()
+	sched := scheduler.NewMemoryScheduler()
+	locker := usecases.NewKeyedLocker()
+	svc := usecases.NewService(store, sched, locker, usecases.Durations{
+		ChallengeTimeout: 60 * time.Second,
+		SecretTimeout:    120 * time.Second,
+		ConfirmTimeout:   5 * time.Second,
+		TurnTimeout:      90 * time.Second,
+	})
+	handler := discordtransport.New(appID, svc)
+
+	dg, err := discordgo.New("Bot " + token)
+	if err != nil {
+		log.Fatal(err)
+	}
+	dg.AddHandler(handler.OnInteractionCreate)
+	if err := dg.Open(); err != nil {
+		log.Fatal(err)
+	}
+	defer dg.Close()
+
+	if err := handler.RegisterCommands(dg, guildID); err != nil {
+		log.Printf("register commands: %v", err)
+	}
+	log.Println("Bot started")
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
 }
