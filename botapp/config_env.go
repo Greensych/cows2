@@ -2,7 +2,9 @@ package botapp
 
 import (
 	"bufio"
+	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -19,28 +21,71 @@ func loadDotEnv(path string) error {
 	defer f.Close()
 
 	s := bufio.NewScanner(f)
-	for s.Scan() {
-		line := strings.TrimSpace(s.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	for lineNo := 1; s.Scan(); lineNo++ {
+		k, v, ok, err := parseDotEnvLine(s.Text())
+		if err != nil {
+			return fmt.Errorf("%s:%d: %w", path, lineNo, err)
 		}
-		if strings.HasPrefix(line, "export ") {
-			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
-		}
-		k, v, ok := strings.Cut(line, "=")
 		if !ok {
 			continue
 		}
-		key := strings.TrimSpace(k)
-		value := strings.TrimSpace(v)
-		value = strings.Trim(value, "\"")
-		if key == "" {
+		if _, exists := os.LookupEnv(k); exists {
 			continue
 		}
-		if _, exists := os.LookupEnv(key); exists {
-			continue
+		if err := os.Setenv(k, v); err != nil {
+			return err
 		}
-		_ = os.Setenv(key, value)
 	}
 	return s.Err()
+}
+
+func parseDotEnvLine(raw string) (key, value string, ok bool, err error) {
+	line := strings.TrimSpace(raw)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", "", false, nil
+	}
+	if strings.HasPrefix(line, "export ") {
+		line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+	}
+
+	k, v, found := strings.Cut(line, "=")
+	if !found {
+		return "", "", false, nil
+	}
+
+	key = strings.TrimSpace(k)
+	if key == "" {
+		return "", "", false, fmt.Errorf("empty env key")
+	}
+
+	value, err = normalizeDotEnvValue(strings.TrimSpace(v))
+	if err != nil {
+		return "", "", false, err
+	}
+
+	return key, value, true, nil
+}
+
+func normalizeDotEnvValue(v string) (string, error) {
+	if v == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(v, "\"") {
+		u, err := strconv.Unquote(v)
+		if err != nil {
+			return "", fmt.Errorf("invalid quoted value: %w", err)
+		}
+		return u, nil
+	}
+	if strings.HasPrefix(v, "'") {
+		if len(v) < 2 || !strings.HasSuffix(v, "'") {
+			return "", fmt.Errorf("invalid single-quoted value")
+		}
+		return v[1 : len(v)-1], nil
+	}
+
+	if i := strings.Index(v, " #"); i >= 0 {
+		v = v[:i]
+	}
+	return strings.TrimSpace(v), nil
 }
